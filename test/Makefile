@@ -42,6 +42,9 @@ test : test.cc include_httplib.cc ../httplib.h Makefile cert.pem
 test_split : test.cc ../httplib.h httplib.cc Makefile cert.pem
 	$(CXX) -o $@ $(CXXFLAGS) test.cc httplib.cc $(TEST_ARGS)
 
+check_abi:
+	@./check-shared-library-abi-compatibility.sh
+
 test_proxy : test_proxy.cc ../httplib.h Makefile cert.pem
 	$(CXX) -o $@ -I.. $(CXXFLAGS) test_proxy.cc $(TEST_ARGS)
 
@@ -66,5 +69,5 @@ cert.pem:
 	./gen-certs.sh
 
 clean:
-	rm -f test test_split test_proxy server_fuzzer *.pem *.0 *.o *.1 *.srl httplib.h httplib.cc
+	rm -rf test test_split test_proxy server_fuzzer *.pem *.0 *.o *.1 *.srl httplib.h httplib.cc _build*
 

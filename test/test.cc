@@ -162,7 +162,8 @@ TEST(SocketStream, is_writable_UNIX) {
 
   const auto asSocketStream = [&](socket_t fd,
                                   std::function<bool(Stream &)> func) {
-    return detail::process_client_socket(fd, 0, 0, 0, 0, func);
+    return detail::process_client_socket(
+        fd, 0, 0, 0, 0, 0, std::chrono::steady_clock::time_point::min(), func);
   };
   asSocketStream(fds[0], [&](Stream &s0) {
     EXPECT_EQ(s0.socket(), fds[0]);
@@ -206,7 +207,8 @@ TEST(SocketStream, is_writable_INET) {
 
   const auto asSocketStream = [&](socket_t fd,
                                   std::function<bool(Stream &)> func) {
-    return detail::process_client_socket(fd, 0, 0, 0, 0, func);
+    return detail::process_client_socket(
+        fd, 0, 0, 0, 0, 0, std::chrono::steady_clock::time_point::min(), func);
   };
   asSocketStream(disconnected_svr_sock, [&](Stream &ss) {
     EXPECT_EQ(ss.socket(), disconnected_svr_sock);
@@ -2977,6 +2979,11 @@ protected:
                res.status = 401;
                res.set_header("WWW-Authenticate", "Basic realm=123456");
              })
+        .Delete("/issue609",
+                [](const httplib::Request &, httplib::Response &res,
+                   const httplib::ContentReader &) {
+                  res.set_content("ok", "text/plain");
+                })
 #if defined(CPPHTTPLIB_ZLIB_SUPPORT) || defined(CPPHTTPLIB_BROTLI_SUPPORT)
         .Get("/compress",
              [&](const Request & /*req*/, Response &res) {
@@ -3534,7 +3541,7 @@ TEST_F(ServerTest, LongRequest) {
 
 TEST_F(ServerTest, TooLongRequest) {
   std::string request;
-  for (size_t i = 0; i < 545; i++) {
+  for (size_t i = 0; i < 546; i++) {
     request += "/TooLongRequest";
   }
   request += "_NG";
@@ -3543,6 +3550,17 @@ TEST_F(ServerTest, TooLongRequest) {
 
   ASSERT_TRUE(res);
   EXPECT_EQ(StatusCode::UriTooLong_414, res->status);
+}
+
+TEST_F(ServerTest, AlmostTooLongRequest) {
+  // test for #2046 - URI length check shouldn't include other content on req line
+  // URI is max URI length, minus 14 other chars in req line (GET, space, leading /, space, HTTP/1.1)
+  std::string request = "/" + string(CPPHTTPLIB_REQUEST_URI_MAX_LENGTH - 14, 'A');
+
+  auto res = cli_.Get(request.c_str());
+
+  ASSERT_TRUE(res);
+  EXPECT_EQ(StatusCode::NotFound_404, res->status);
 }
 
 TEST_F(ServerTest, LongHeader) {
@@ -4046,6 +4064,13 @@ TEST_F(ServerTest, Issue1772) {
   auto res = cli_.Get("/issue1772", {{make_range_header({{1000, -1}})}});
   ASSERT_TRUE(res);
   EXPECT_EQ(StatusCode::Unauthorized_401, res->status);
+}
+
+TEST_F(ServerTest, Issue609) {
+  auto res = cli_.Delete("/issue609");
+  ASSERT_TRUE(res);
+  EXPECT_EQ(StatusCode::OK_200, res->status);
+  EXPECT_EQ(std::string("ok"), res->body);
 }
 
 TEST_F(ServerTest, GetStreamedChunked) {
@@ -4892,7 +4917,8 @@ static bool send_request(time_t read_timeout_sec, const std::string &req,
   if (client_sock == INVALID_SOCKET) { return false; }
 
   auto ret = detail::process_client_socket(
-      client_sock, read_timeout_sec, 0, 0, 0, [&](Stream &strm) {
+      client_sock, read_timeout_sec, 0, 0, 0, 0,
+      std::chrono::steady_clock::time_point::min(), [&](Stream &strm) {
         if (req.size() !=
             static_cast<size_t>(strm.write(req.data(), req.size()))) {
           return false;
@@ -8175,6 +8201,258 @@ TEST(Expect100ContinueTest, ServerClosesConnection) {
       buffer.push_back('\0');
       ASSERT_STRCASEEQ(buffer.data(), reject);
     }
+  }
+}
+#endif
+
+TEST(MaxTimeoutTest, ContentStream) {
+  Server svr;
+
+  svr.Get("/stream", [&](const Request &, Response &res) {
+    auto data = new std::string("01234567890123456789");
+
+    res.set_content_provider(
+        data->size(), "text/plain",
+        [&, data](size_t offset, size_t length, DataSink &sink) {
+          const size_t DATA_CHUNK_SIZE = 4;
+          const auto &d = *data;
+          std::this_thread::sleep_for(std::chrono::seconds(1));
+          sink.write(&d[offset], std::min(length, DATA_CHUNK_SIZE));
+          return true;
+        },
+        [data](bool success) {
+          EXPECT_FALSE(success);
+          delete data;
+        });
+  });
+
+  svr.Get("/stream_without_length", [&](const Request &, Response &res) {
+    auto i = new size_t(0);
+
+    res.set_content_provider(
+        "text/plain",
+        [i](size_t, DataSink &sink) {
+          if (*i < 5) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            sink.write("abcd", 4);
+            (*i)++;
+          } else {
+            sink.done();
+          }
+          return true;
+        },
+        [i](bool success) {
+          EXPECT_FALSE(success);
+          delete i;
+        });
+  });
+
+  svr.Get("/chunked", [&](const Request &, Response &res) {
+    auto i = new size_t(0);
+
+    res.set_chunked_content_provider(
+        "text/plain",
+        [i](size_t, DataSink &sink) {
+          if (*i < 5) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            sink.os << "abcd";
+            (*i)++;
+          } else {
+            sink.done();
+          }
+          return true;
+        },
+        [i](bool success) {
+          EXPECT_FALSE(success);
+          delete i;
+        });
+  });
+
+  auto listen_thread = std::thread([&svr]() { svr.listen("localhost", PORT); });
+  auto se = detail::scope_exit([&] {
+    svr.stop();
+    listen_thread.join();
+    ASSERT_FALSE(svr.is_running());
+  });
+
+  svr.wait_until_ready();
+
+  const time_t timeout = 2000;
+  const time_t threshold = 200;
+
+  Client cli("localhost", PORT);
+  cli.set_max_timeout(std::chrono::milliseconds(timeout));
+
+
+  {
+    auto start = std::chrono::steady_clock::now();
+
+    auto res = cli.Get("/stream");
+
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now() - start)
+                       .count();
+
+    ASSERT_FALSE(res);
+    EXPECT_EQ(Error::Read, res.error());
+    EXPECT_TRUE(timeout <= elapsed && elapsed < timeout + threshold);
+  }
+
+  {
+    auto start = std::chrono::steady_clock::now();
+
+    auto res = cli.Get("/stream_without_length");
+
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now() - start)
+                       .count();
+
+    ASSERT_FALSE(res);
+    EXPECT_EQ(Error::Read, res.error());
+    EXPECT_TRUE(timeout <= elapsed && elapsed < timeout + threshold);
+  }
+
+  {
+    auto start = std::chrono::steady_clock::now();
+
+    auto res = cli.Get("/chunked", [&](const char *data, size_t data_length) {
+      EXPECT_EQ("abcd", string(data, data_length));
+      return true;
+    });
+
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now() - start)
+                       .count();
+
+    ASSERT_FALSE(res);
+    EXPECT_EQ(Error::Read, res.error());
+    EXPECT_TRUE(timeout <= elapsed && elapsed < timeout + threshold);
+  }
+}
+
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+TEST(MaxTimeoutTest, ContentStreamSSL) {
+  SSLServer svr(SERVER_CERT_FILE, SERVER_PRIVATE_KEY_FILE);
+
+  svr.Get("/stream", [&](const Request &, Response &res) {
+    auto data = new std::string("01234567890123456789");
+
+    res.set_content_provider(
+        data->size(), "text/plain",
+        [&, data](size_t offset, size_t length, DataSink &sink) {
+          const size_t DATA_CHUNK_SIZE = 4;
+          const auto &d = *data;
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+          sink.write(&d[offset], std::min(length, DATA_CHUNK_SIZE));
+          return true;
+        },
+        [data](bool success) {
+          EXPECT_FALSE(success);
+          delete data;
+        });
+  });
+
+  svr.Get("/stream_without_length", [&](const Request &, Response &res) {
+    auto i = new size_t(0);
+
+    res.set_content_provider(
+        "text/plain",
+        [i](size_t, DataSink &sink) {
+          if (*i < 5) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            sink.write("abcd", 4);
+            (*i)++;
+          } else {
+            sink.done();
+          }
+          return true;
+        },
+        [i](bool success) {
+          EXPECT_FALSE(success);
+          delete i;
+        });
+  });
+
+  svr.Get("/chunked", [&](const Request &, Response &res) {
+    auto i = new size_t(0);
+
+    res.set_chunked_content_provider(
+        "text/plain",
+        [i](size_t, DataSink &sink) {
+          if (*i < 5) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            sink.os << "abcd";
+            (*i)++;
+          } else {
+            sink.done();
+          }
+          return true;
+        },
+        [i](bool success) {
+          EXPECT_FALSE(success);
+          delete i;
+        });
+  });
+
+  auto listen_thread = std::thread([&svr]() { svr.listen("localhost", PORT); });
+  auto se = detail::scope_exit([&] {
+    svr.stop();
+    listen_thread.join();
+    ASSERT_FALSE(svr.is_running());
+  });
+
+  svr.wait_until_ready();
+
+  const time_t timeout = 2000;
+  const time_t threshold = 1000; // SSL_shutdown is slow...
+
+  SSLClient cli("localhost", PORT);
+  cli.enable_server_certificate_verification(false);
+  cli.set_max_timeout(std::chrono::milliseconds(timeout));
+
+  {
+    auto start = std::chrono::steady_clock::now();
+
+    auto res = cli.Get("/stream");
+
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now() - start)
+                       .count();
+
+    ASSERT_FALSE(res);
+    EXPECT_EQ(Error::Read, res.error());
+    EXPECT_TRUE(timeout <= elapsed && elapsed < timeout + threshold);
+  }
+
+  {
+    auto start = std::chrono::steady_clock::now();
+
+    auto res = cli.Get("/stream_without_length");
+
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now() - start)
+                       .count();
+
+    ASSERT_FALSE(res);
+    EXPECT_EQ(Error::Read, res.error());
+    EXPECT_TRUE(timeout <= elapsed && elapsed < timeout + threshold);
+  }
+
+  {
+    auto start = std::chrono::steady_clock::now();
+
+    auto res = cli.Get("/chunked", [&](const char *data, size_t data_length) {
+      EXPECT_EQ("abcd", string(data, data_length));
+      return true;
+    });
+
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now() - start)
+                       .count();
+
+    ASSERT_FALSE(res);
+    EXPECT_EQ(Error::Read, res.error());
+    EXPECT_TRUE(timeout <= elapsed && elapsed < timeout + threshold);
   }
 }
 #endif

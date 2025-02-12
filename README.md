@@ -654,6 +654,9 @@ res = cli.Options("/resource/foo");
 cli.set_connection_timeout(0, 300000); // 300 milliseconds
 cli.set_read_timeout(5, 0); // 5 seconds
 cli.set_write_timeout(5, 0); // 5 seconds
+
+// This method works the same as curl's `--max-timeout` option
+svr.set_max_timeout(5000); // 5 seconds
 ```
 
 ### Receive content with a content receiver
@@ -963,7 +966,7 @@ Include `httplib.h` before `Windows.h` or include `Windows.h` by defining `WIN32
 > cpp-httplib officially supports only the latest Visual Studio. It might work with former versions of Visual Studio, but I can no longer verify it. Pull requests are always welcome for the older versions of Visual Studio unless they break the C++11 conformance.
 
 > [!NOTE]
-> Windows 8 or lower, Visual Studio 2013 or lower, and Cygwin and MSYS2 including MinGW are neither supported nor tested.
+> Windows 8 or lower, Visual Studio 2015 or lower, and Cygwin and MSYS2 including MinGW are neither supported nor tested.
 
 License
 -------

@@ -1,19 +1,10 @@
-// #include <cstring>
-// #include <ctime>
 #include <filesystem>
 #include <getopt.h>
 #include <iostream>
-// // #include <csignal>
 #include <sys/wait.h>
 
 #include "../include/httplib.h"
 #include "../include/json.hpp"
-
-// #include <signal.h>
-// #include <string>
-// #include <sys/stat.h>
-// #include <sys/types.h>
-// #include <unistd.h>
 
 namespace fs = std::filesystem;
 using JSON = nlohmann::json;
@@ -27,8 +18,6 @@ using JSON = nlohmann::json;
 // #define SERVER_PRIVATE_KEY_FILE "ssl/server.key"
 
 #define CheckPoint(fmt, arg...) printf("# CheckPoint: %d(%s): " fmt "\n", (int)__LINE__, __FUNCTION__, ##arg)
-
-
 
 httplib::Server* g_server = nullptr;
 int g_running_processes = 0;
@@ -136,58 +125,10 @@ void handleFileDownload(const httplib::Request& req, httplib::Response& res) {
     }
 
     // Start download ...
-#if 1    
     res.set_file_content(filePath, "application/octet-stream");
-#else
-    size_t fileSize = fs::file_size(filePath);
-
-    std::ifstream file(filePath, std::ios::in | std::ios::binary);
-    if (! file) {
-        res.status = httplib::StatusCode::InternalServerError_500;
-        response["message"] = "Download '" + filename + "' NG: Open failed.";
-        res.set_content(response.dump(4), "application/json");
-        return;
-    }
-
-    res.set_header("Content-Length", std::to_string(fileSize));
-    res.set_header("Cache-Control", "no-cache");
-    res.set_header("Content-Disposition", "attachment; filename=" + filename);
-    res.set_header("Content-Transfer-Encoding", "binary");
- 
-
-    // Send content with the content provider
-    bool success_ok = true;
-    res.set_content_provider(
-        fileSize,
-        "application/octet-stream",
-        [&file](size_t offset, size_t length, httplib::DataSink& sink) {
-            file.seekg(offset, std::ios::beg);
-            std::vector<char> buffer(length);
-            file.read(buffer.data(), length);
-            // gcount() -- file real read size
-            sink.write(buffer.data(), static_cast<size_t>(file.gcount()));
-        },
-        [&file, &success_ok](bool success) {
-            // file.close();
-            success_ok = success;
-        }
-    );
-    file.close();
-
-    if (success_ok) {
-        res.status = httplib::StatusCode::OK_200;
-        response["message"] = "Download '" + filename + "' OK";
-        res.set_content(response.dump(4), "application/json");
-    } else {
-        res.status = httplib::StatusCode::InternalServerError_500;
-        response["message"] = "Download '" + filename + "' NG: Reading file or sending to network";
-        res.set_content(response.dump(4), "application/json");
-    }
-#endif    
 }
 
 // curl -d @busybox http://127.0.0.1:1216/Files/e/f
-
 // curl -d @README.md http://127.0.0.1:1216/Files/README.md
 // const Request &req, Response &res, const ContentReader &content_reader
 void handleFileUpload(const httplib::Request& req, httplib::Response& res, const httplib::ContentReader &content_reader) {
@@ -303,27 +244,6 @@ int main(int argc, char* argv[])
         }
     }
 
-
-    // // Get address and port
-    // {
-    //     std::vector<std::string> tokens = get_tokens(RedosHost, ":");
-    //     std::string Ports = "1215";
-
-    //     if (tokens.size() == 1) {
-    //         Ports = tokens[0];
-    //     } else {
-    //         Addr = tokens[0];
-    //         Ports = tokens[1];
-    //     }
-    //     try {
-    //         Port = std::stoi(Ports);
-    //     } catch (const std::invalid_argument& e) {
-    //         std::cerr << "Error invalid port: " << e.what() << std::endl;
-    //     } catch (const std::out_of_range& e) {
-    //         std::cerr << "Error port out of range: " << e.what() << std::endl;
-    //     }
-    // }
-
     // Create root dir
     {
         if (RootDir == ".") {
@@ -373,13 +293,6 @@ int main(int argc, char* argv[])
         // -----------------------------------------------------------------------------------------
         redos_server.Head("/Files/:filename", handleFileExists);
         redos_server.Get("/Files/:filename", handleFileDownload);
-        // redos_server.Get("/Files/:filename", [](const httplib::Request &req, httplib::Response &res) {
-        //     if (req.method == "HEAD") {
-        //         handleFileExists(req, res);
-        //     } else {
-        //         handleFileExists(req, res);
-        //     }
-        // });
 
         redos_server.Put("/Files/:filename", handleFileUpload); // Put == Post
         redos_server.Post("/Files/:filename", handleFileUpload);        

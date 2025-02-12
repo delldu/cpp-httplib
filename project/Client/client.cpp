@@ -46,19 +46,6 @@ int upload_file(char *filename) {
     return 0;
 }
 
-// std::ofstream ofs{filePath};
-// httplib::Client cli(baseURL);
-//             auto res = cli.Get(path,
-//                                [&](const char *data, size_t dataLen) {
-//                                    // write downloaded data to file
-//                                    ofs.write(data, dataLen);
-//                                    return true;
-//                                });
-//             // close file stream
-//             ofs.flush();
-//             ofs.close();
-
-
 int download_file(char *filename) {
     httplib::Client cli(REDOS_HOST, REDOS_PORT);
 
@@ -106,9 +93,6 @@ int delete_file(char *filename) {
     
     return 0;
 }
-
-
-
 
 void help(char* cmd)
 {

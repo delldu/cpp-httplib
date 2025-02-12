@@ -942,7 +942,7 @@ public:
   virtual ~Server();
 
   virtual bool is_valid() const;
-
+  Server &Head(const std::string &pattern, Handler handler);
   Server &Get(const std::string &pattern, Handler handler);
   Server &Post(const std::string &pattern, Handler handler);
   Server &Post(const std::string &pattern, HandlerWithContentReader handler);
@@ -1102,6 +1102,7 @@ private:
   std::string default_file_mimetype_ = "application/octet-stream";
   Handler file_request_handler_;
 
+  Handlers head_handlers_;
   Handlers get_handlers_;
   Handlers post_handlers_;
   HandlersForContentReader post_handlers_for_content_reader_;
@@ -6188,6 +6189,11 @@ Server::make_matcher(const std::string &pattern) {
   }
 }
 
+inline Server &Server::Head(const std::string &pattern, Handler handler) {
+  head_handlers_.emplace_back(make_matcher(pattern), std::move(handler));
+  return *this;
+}
+
 inline Server &Server::Get(const std::string &pattern, Handler handler) {
   get_handlers_.emplace_back(make_matcher(pattern), std::move(handler));
   return *this;
@@ -6554,17 +6560,15 @@ inline bool Server::write_response_core(Stream &strm, bool close_connection,
 
   // Body
   auto ret = true;
-  if (req.method != "HEAD") {
-    if (!res.body.empty()) {
-      if (!detail::write_data(strm, res.body.data(), res.body.size())) {
-        ret = false;
-      }
-    } else if (res.content_provider_) {
-      if (write_content_with_provider(strm, req, res, boundary, content_type)) {
-        res.content_provider_success_ = true;
-      } else {
-        ret = false;
-      }
+  if (!res.body.empty()) {
+    if (!detail::write_data(strm, res.body.data(), res.body.size())) {
+      ret = false;
+    }
+  } else if (res.content_provider_) {
+    if (write_content_with_provider(strm, req, res, boundary, content_type)) {
+      res.content_provider_success_ = true;
+    } else {
+      ret = false;
     }
   }
 
@@ -6973,7 +6977,9 @@ inline bool Server::routing(Request &req, Response &res, Stream &strm) {
   }
 
   // Regular handler
-  if (req.method == "GET" || req.method == "HEAD") {
+  if (req.method == "HEAD") {
+    return dispatch_request(req, res, head_handlers_);
+  }else if (req.method == "GET") {
     return dispatch_request(req, res, get_handlers_);
   } else if (req.method == "POST") {
     return dispatch_request(req, res, post_handlers_);
@@ -8058,7 +8064,7 @@ inline bool ClientImpl::process_request(Stream &strm, Request &req,
   }
 
   // Body
-  if ((res.status != StatusCode::NoContent_204) && req.method != "HEAD" &&
+  if ((res.status != StatusCode::NoContent_204) &&
       req.method != "CONNECT") {
     auto redirect = 300 < res.status && res.status < 400 &&
                     res.status != StatusCode::NotModified_304 &&
